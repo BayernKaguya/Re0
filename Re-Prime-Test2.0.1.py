@@ -15,6 +15,7 @@ from itertools import combinations, groupby
 import warnings
 import time
 import json
+from collections import deque
 
 # --- 可视化库导入 ---
 import matplotlib.pyplot as plt
@@ -1791,6 +1792,34 @@ class App(ctk.CTk):
         
         self.queue = queue.Queue(); self.current_params = None; self.cache = {}
         
+        # 消息调度中间层
+        self.raw_queue = queue.Queue()  # 接收计算线程原始消息
+        self.ui_queue = queue.Queue()   # 向主线程发送优化后的消息
+        self.message_scheduler_active = False
+        
+        # 用户体验增强
+        self.calculation_active = False  # 计算是否正在进行
+        self.cancel_calculation = threading.Event()  # 取消计算的事件
+        self.heartbeat_counter = 0  # 心跳计数器
+        self.last_heartbeat = 0  # 最后心跳时间
+        
+        # 性能优化相关变量
+        self.last_progress_update = 0
+        self.progress_update_interval = 0.5  # 进度更新间隔（秒）
+        self.text_buffer = deque(maxlen=50)  # 文本缓冲区，限制最大长度
+        self.pending_text_updates = []  # 待更新的文本
+        self.last_text_update = 0
+        self.text_update_interval = 0.2  # 文本更新间隔（秒）
+        
+        # 内存管理优化
+        self.max_pending_text_updates = 100  # 最大待更新文本数量
+        self.cache_cleanup_interval = 300  # 缓存清理间隔（秒）
+        self.last_cache_cleanup = time.time()
+        self.max_cache_age = 1800  # 缓存最大保存时间（秒）
+        
+        # 启动定期内存清理
+        self.after(self.cache_cleanup_interval * 1000, self.periodic_memory_cleanup)
+        
         self.frame_left = ctk.CTkScrollableFrame(self, width=380, corner_radius=0, label_text="输入与配置", label_font=ctk.CTkFont(size=16, weight="bold"))
         self.frame_left.grid(row=0, column=0, rowspan=3, sticky="nsw")
         
@@ -1919,12 +1948,21 @@ class App(ctk.CTk):
         self.button_frame.grid(row=1, column=1, padx=(10,20), pady=(0,10), sticky="ew")
         self.button_frame.grid_columnconfigure(0, weight=1)
         self.button_frame.grid_columnconfigure(1, weight=1)
+        self.button_frame.grid_columnconfigure(2, weight=1)
         
         self.button_run = ctk.CTkButton(self.button_frame, text="开始计算", height=40, font=ctk.CTkFont(size=18, weight="bold"), command=self.start_calculation)
         self.button_run.grid(row=0, column=0, padx=(0,5), sticky="ew")
         
+        # 添加取消按钮
+        self.button_cancel = ctk.CTkButton(self.button_frame, text="取消计算", height=40, 
+                                          font=ctk.CTkFont(size=16, weight="bold"), 
+                                          command=self.cancel_calculation_clicked,
+                                          fg_color="red", hover_color="darkred")
+        self.button_cancel.grid(row=0, column=1, padx=5, sticky="ew")
+        self.button_cancel.configure(state="disabled")  # 初始状态禁用
+        
         self.button_save_params = ctk.CTkButton(self.button_frame, text="保存参数", height=40, font=ctk.CTkFont(size=16, weight="bold"), command=self.save_parameters)
-        self.button_save_params.grid(row=0, column=1, padx=(5,0), sticky="ew")
+        self.button_save_params.grid(row=0, column=2, padx=(5,0), sticky="ew")
         
         # 添加加载参数按钮（可以通过右键菜单或快捷键访问）
         self.button_frame.bind("<Button-3>", self.show_context_menu)  # 右键菜单
@@ -1936,7 +1974,11 @@ class App(ctk.CTk):
         # 尝试自动加载上次会话的参数
         self.auto_load_last_session()
         
-        self.after(100, self.process_queue)
+        # 启动消息调度器
+        self.start_message_scheduler()
+        
+        # 优化后的队列处理：降低频率
+        self.after(250, self.process_queue)
 
     def auto_save_session(self):
         """自动保存当前会话参数"""
@@ -2200,6 +2242,9 @@ class App(ctk.CTk):
     def on_closing(self):
         """程序关闭时的处理"""
         try:
+            # 停止消息调度器
+            self.message_scheduler_active = False
+            
             # 自动保存当前会话参数
             self.auto_save_session()
         except Exception:
@@ -2320,32 +2365,366 @@ v4.0.0 重大更新:
         return params
 
     def process_queue(self):
+        """优化的队列处理：批量处理消息，减少GUI更新频率"""
+        messages_processed = 0
+        max_messages_per_cycle = 10  # 每次最多处理10条消息
+        
         try:
-            msg_type, msg_content = self.queue.get_nowait()
-            if msg_type == "log": self.update_textbox(msg_content)
-            elif msg_type == "progress": self.update_progress(*msg_content)
-            elif msg_type == "progress_update": self.status_label.configure(text=f"状态: {msg_content[0]}"); self.progressbar.set(msg_content[1])
-            elif msg_type == "pre_calculation_done":
-                self.progressbar.set(1.0); raw_data, raw_data_with_ldh, shelves, corr_label, corr_val, grade, packing_summary = msg_content
-                self.cache.update({
-                    'excel_path': self.current_params['excel_file'], 
-                    'sku_sheet': self.current_params['sku_sheet'],
-                    'shelf_sheet': self.current_params['shelf_sheet'],
-                    'raw_data': raw_data,
-                    'raw_data_with_ldh': raw_data_with_ldh,
-                    'shelves': shelves, 
-                    'corr_result': (corr_label, corr_val, grade),
-                    'packing_summary': packing_summary
-                })
-                self.proceed_with_correlation_check()
-            elif msg_type == "agg_data_computed": self.cache.update({'agg_data': msg_content[0], 'operable_data': msg_content[1], 'h_max': self.current_params['h_max']})
-            elif msg_type == "result": self.display_results(*msg_content)
-            elif msg_type == "diagnostics": self.display_diagnostics(*msg_content)
-            elif msg_type == "visualization_data": self.cache['viz_data'] = msg_content; self.update_charts(); self.tabview.set("分析图表")
-            elif msg_type == "error": self.update_textbox(f"\n!!!!!! 计算出错 !!!!!!\n\n{msg_content}\n"); self.button_run.configure(state="normal"); self.status_label.configure(text="状态: 计算失败"); self.progressbar.set(0)
-            elif msg_type == "done": self.status_label.configure(text=f"状态: {msg_content}"); self.button_run.configure(state="normal"); self.progressbar.set(1)
-        except queue.Empty: pass
-        self.after(100, self.process_queue)
+            while messages_processed < max_messages_per_cycle:
+                try:
+                    msg_type, msg_content = self.ui_queue.get_nowait()
+                    self.handle_queue_message(msg_type, msg_content)
+                    messages_processed += 1
+                except queue.Empty:
+                    break
+            
+            # 批量更新待处理的文本
+            self.flush_pending_text_updates()
+            
+        except Exception as e:
+            print(f"队列处理错误: {e}")
+        
+        # 动态调整处理频率
+        if messages_processed >= max_messages_per_cycle:
+            # 如果队列很忙，稍微提高处理频率
+            self.after(200, self.process_queue)
+        else:
+            # 正常情况下使用较低频率
+            self.after(250, self.process_queue)
+
+    def handle_queue_message(self, msg_type, msg_content):
+        """处理单条队列消息"""
+        if msg_type == "log":
+            self.add_to_text_buffer(msg_content)
+        elif msg_type == "log_batch":
+            # 批量处理文本消息
+            self.update_textbox_immediate(msg_content, False)
+        elif msg_type == "progress":
+            self.update_progress_throttled(*msg_content)
+        elif msg_type == "progress_update":
+            self.update_status_throttled(msg_content[0], msg_content[1])
+        elif msg_type == "pre_calculation_done":
+            self.handle_pre_calculation_done(msg_content)
+        elif msg_type == "agg_data_computed":
+            self.cache.update({'agg_data': msg_content[0], 'operable_data': msg_content[1], 
+                             'h_max': self.current_params['h_max']})
+        elif msg_type == "result":
+            self.display_results(*msg_content)
+        elif msg_type == "diagnostics":
+            self.display_diagnostics(*msg_content)
+        elif msg_type == "visualization_data":
+            self.cache['viz_data'] = msg_content
+            self.update_charts()
+            self.tabview.set("分析图表")
+        elif msg_type == "error":
+            self.handle_error(msg_content)
+        elif msg_type == "done":
+            self.handle_calculation_done(msg_content)
+
+    def add_to_text_buffer(self, text):
+        """将文本添加到缓冲区，而不是立即更新UI，带内存保护"""
+        self.pending_text_updates.append(text)
+        
+        # 防止内存溢出：如果缓冲区过大，强制刷新一部分
+        if len(self.pending_text_updates) > self.max_pending_text_updates:
+            # 立即处理一半的缓冲文本
+            half_size = len(self.pending_text_updates) // 2
+            immediate_text = ''.join(self.pending_text_updates[:half_size])
+            self.pending_text_updates = self.pending_text_updates[half_size:]
+            self.update_textbox_immediate(immediate_text, False)
+
+    def flush_pending_text_updates(self):
+        """批量更新文本，减少UI更新频率"""
+        current_time = time.time()
+        if (current_time - self.last_text_update > self.text_update_interval and 
+            self.pending_text_updates):
+            
+            # 合并所有待更新的文本
+            combined_text = ''.join(self.pending_text_updates)
+            self.update_textbox_immediate(combined_text)
+            
+            self.pending_text_updates.clear()
+            self.last_text_update = current_time
+
+    def update_progress_throttled(self, current, total, start_time, stage_text):
+        """限制进度更新频率"""
+        current_time = time.time()
+        if current_time - self.last_progress_update < self.progress_update_interval:
+            return
+        
+        self.last_progress_update = current_time
+        
+        try:
+            progress = current / total if total > 0 else 0
+            self.progressbar.set(progress)
+            
+            # 简化时间计算
+            elapsed_time = current_time - start_time
+            remaining_text = ""
+            
+            if current > 5 and progress > 0.01:
+                remaining_time = (elapsed_time / current) * (total - current)
+                remaining_text = f" | 剩余: {remaining_time:.0f}s"
+            
+            # 简化文本处理
+            if len(stage_text) > 30:
+                stage_text = stage_text[:27] + "..."
+            
+            status_text = f"状态: {stage_text} | 已用: {elapsed_time:.0f}s{remaining_text}"
+            self.status_label.configure(text=status_text)
+            
+        except Exception as e:
+            print(f"进度更新错误: {e}")
+
+    def update_status_throttled(self, status_text, progress_value):
+        """限制状态更新频率"""
+        current_time = time.time()
+        if current_time - self.last_progress_update < self.progress_update_interval:
+            return
+        
+        self.last_progress_update = current_time
+        self.status_label.configure(text=f"状态: {status_text}")
+        self.progressbar.set(progress_value)
+
+    def handle_pre_calculation_done(self, msg_content):
+        """处理预计算完成"""
+        self.progressbar.set(1.0)
+        raw_data, raw_data_with_ldh, shelves, corr_label, corr_val, grade, packing_summary = msg_content
+        self.cache.update({
+            'excel_path': self.current_params['excel_file'], 
+            'sku_sheet': self.current_params['sku_sheet'],
+            'shelf_sheet': self.current_params['shelf_sheet'],
+            'raw_data': raw_data,
+            'raw_data_with_ldh': raw_data_with_ldh,
+            'shelves': shelves, 
+            'corr_result': (corr_label, corr_val, grade),
+            'packing_summary': packing_summary
+        })
+        self.proceed_with_correlation_check()
+
+    def handle_error(self, error_msg):
+        """处理错误消息"""
+        self.update_textbox_immediate(f"\n!!!!!! 计算出错 !!!!!!\n\n{error_msg}\n", False)
+        self.set_calculation_active(False)
+        self.status_label.configure(text="状态: 计算失败")
+        self.progressbar.set(0)
+
+    def handle_calculation_done(self, msg_content):
+        """处理计算完成"""
+        self.status_label.configure(text=f"状态: {msg_content}")
+        self.set_calculation_active(False)
+        self.progressbar.set(1)
+        
+        # 计算完成后优化内存使用
+        self.after_idle(self.optimize_memory_usage)
+
+    def start_message_scheduler(self):
+        """启动消息调度线程"""
+        if not self.message_scheduler_active:
+            self.message_scheduler_active = True
+            threading.Thread(target=self.message_scheduler_worker, daemon=True).start()
+
+    def message_scheduler_worker(self):
+        """消息调度工作线程"""
+        text_buffer = []
+        last_progress_msg = None
+        last_progress_time = 0
+        
+        while self.message_scheduler_active:
+            try:
+                # 收集原始消息（阻塞等待）
+                try:
+                    msg_type, msg_content = self.raw_queue.get(timeout=0.1)
+                except queue.Empty:
+                    # 超时时处理缓冲的消息
+                    self.flush_scheduler_buffers(text_buffer, last_progress_msg)
+                    text_buffer.clear()
+                    last_progress_msg = None
+                    continue
+                
+                # 按消息类型进行分类处理
+                if msg_type == "log":
+                    text_buffer.append(msg_content)
+                    # 如果文本缓冲区达到一定数量，立即发送
+                    if len(text_buffer) >= 10:
+                        self.ui_queue.put(("log_batch", ''.join(text_buffer)))
+                        text_buffer.clear()
+                        
+                elif msg_type == "progress":
+                    current_time = time.time()
+                    # 限制进度消息频率
+                    if current_time - last_progress_time > 0.3:  # 每300ms最多一次
+                        if last_progress_msg:
+                            self.ui_queue.put(last_progress_msg)
+                        last_progress_msg = (msg_type, msg_content)
+                        last_progress_time = current_time
+                    else:
+                        # 更新最新的进度信息，但不立即发送
+                        last_progress_msg = (msg_type, msg_content)
+                        
+                elif msg_type == "progress_update":
+                    current_time = time.time()
+                    # 限制状态更新频率
+                    if current_time - last_progress_time > 0.3:
+                        self.ui_queue.put((msg_type, msg_content))
+                        last_progress_time = current_time
+                        
+                else:
+                    # 高优先级消息（错误、完成、结果等）立即发送
+                    # 先发送缓冲的消息
+                    self.flush_scheduler_buffers(text_buffer, last_progress_msg)
+                    text_buffer.clear()
+                    last_progress_msg = None
+                    
+                    # 然后发送高优先级消息
+                    self.ui_queue.put((msg_type, msg_content))
+                    
+            except Exception as e:
+                print(f"消息调度器错误: {e}")
+                # 发生错误时，清空缓冲区并继续运行
+                text_buffer.clear()
+                last_progress_msg = None
+
+    def flush_scheduler_buffers(self, text_buffer, last_progress_msg):
+        """刷新调度器缓冲区"""
+        if text_buffer:
+            self.ui_queue.put(("log_batch", ''.join(text_buffer)))
+        if last_progress_msg:
+            self.ui_queue.put(last_progress_msg)
+
+    def periodic_memory_cleanup(self):
+        """定期内存清理"""
+        try:
+            current_time = time.time()
+            
+            # 清理过期的缓存数据
+            self.cleanup_expired_cache(current_time)
+            
+            # 限制待更新文本的数量
+            if len(self.pending_text_updates) > self.max_pending_text_updates:
+                # 保留最新的文本更新
+                self.pending_text_updates = self.pending_text_updates[-self.max_pending_text_updates//2:]
+            
+            # 清理消息队列（如果队列过大）
+            self.cleanup_message_queues()
+            
+            self.last_cache_cleanup = current_time
+            
+        except Exception as e:
+            print(f"内存清理错误: {e}")
+        finally:
+            # 安排下次清理
+            self.after(self.cache_cleanup_interval * 1000, self.periodic_memory_cleanup)
+
+    def cleanup_expired_cache(self, current_time):
+        """清理过期的缓存数据"""
+        # 检查主缓存的年龄
+        if hasattr(self, 'cache_timestamp'):
+            if current_time - self.cache_timestamp > self.max_cache_age:
+                # 只清理可重新生成的数据，保留重要的原始数据
+                keys_to_remove = ['viz_data', 'agg_data']
+                for key in keys_to_remove:
+                    self.cache.pop(key, None)
+                print("已清理过期缓存数据")
+        else:
+            self.cache_timestamp = current_time
+
+    def cleanup_message_queues(self):
+        """清理消息队列"""
+        # 限制原始队列大小
+        if hasattr(self, 'raw_queue') and self.raw_queue.qsize() > 100:
+            # 清空一半的消息（保留最新的）
+            temp_messages = []
+            for _ in range(min(50, self.raw_queue.qsize())):
+                try:
+                    temp_messages.append(self.raw_queue.get_nowait())
+                except queue.Empty:
+                    break
+            
+            # 清空队列
+            while not self.raw_queue.empty():
+                try:
+                    self.raw_queue.get_nowait()
+                except queue.Empty:
+                    break
+            
+            # 放回最新的消息
+            for msg in temp_messages:
+                self.raw_queue.put(msg)
+
+    def optimize_memory_usage(self):
+        """优化内存使用"""
+        try:
+            # 强制垃圾回收
+            import gc
+            gc.collect()
+            
+            # 清理matplotlib的缓存
+            if hasattr(self, 'canvas') and self.canvas:
+                plt.close('all')
+            
+            # 更新缓存时间戳
+            self.cache_timestamp = time.time()
+            
+        except Exception as e:
+            print(f"内存优化错误: {e}")
+
+    def cancel_calculation_clicked(self):
+        """用户点击取消按钮"""
+        if self.calculation_active:
+            # 设置取消标志
+            self.cancel_calculation.set()
+            
+            # 更新UI状态
+            self.button_cancel.configure(state="disabled")
+            self.status_label.configure(text="状态: 正在取消计算...")
+            
+            # 添加取消消息到日志
+            self.update_textbox("\n用户请求取消计算，正在安全终止...\n")
+            
+            # 在5秒后强制恢复UI（防止线程卡死）
+            self.after(5000, self.force_reset_ui)
+
+    def force_reset_ui(self):
+        """强制重置UI状态"""
+        if self.calculation_active:
+            self.calculation_active = False
+            self.button_run.configure(state="normal")
+            self.button_cancel.configure(state="disabled")
+            self.status_label.configure(text="状态: 计算已取消")
+            self.progressbar.set(0)
+
+    def start_heartbeat(self):
+        """启动心跳机制"""
+        if self.calculation_active:
+            self.heartbeat_counter += 1
+            current_time = time.time()
+            
+            # 每10秒发送一次心跳
+            if current_time - self.last_heartbeat > 10:
+                self.last_heartbeat = current_time
+                heartbeat_msg = f">>> 计算进行中 (心跳 #{self.heartbeat_counter}) <<<\n"
+                self.update_textbox(heartbeat_msg)
+            
+            # 继续心跳
+            self.after(10000, self.start_heartbeat)
+
+    def set_calculation_active(self, active):
+        """设置计算状态并更新UI"""
+        self.calculation_active = active
+        
+        if active:
+            # 开始计算
+            self.cancel_calculation.clear()
+            self.button_run.configure(state="disabled")
+            self.button_cancel.configure(state="normal")
+            self.heartbeat_counter = 0
+            self.last_heartbeat = time.time()
+            self.start_heartbeat()
+        else:
+            # 计算结束
+            self.button_run.configure(state="normal")
+            self.button_cancel.configure(state="disabled")
     
     def start_calculation(self):
         if self.canvas: self.canvas.get_tk_widget().destroy(); self.canvas = None
@@ -2354,14 +2733,20 @@ v4.0.0 重大更新:
             if not hasattr(self, 'selected_excel_file'): raise ValueError("请先选择Excel文件。")
             self.current_params = self.collect_params()
             
+            # 设置计算状态为活跃
+            self.set_calculation_active(True)
+            
             # 自动保存当前会话参数
             self.auto_save_session()
             
-            self.update_textbox("", True); self.button_run.configure(state="disabled"); self.progressbar.set(0)
+            self.update_textbox("", True); self.progressbar.set(0)
             if self.cache.get('excel_path') == self.current_params['excel_file'] and self.cache.get('sku_sheet') == self.current_params['sku_sheet'] and self.cache.get('shelf_sheet') == self.current_params['shelf_sheet']:
                 self.update_textbox("文件缓存命中，跳过文件读取和检验步骤。\n"); self.proceed_with_correlation_check()
-            else: self.status_label.configure(text="状态: 正在初始化..."); threading.Thread(target=pre_calculation_worker, args=(self.queue, self.current_params)).start()
-        except Exception as e: messagebox.showerror("输入或文件错误", f"发生错误: {e}"); self.button_run.configure(state="normal"); self.status_label.configure(text="状态: 空闲")
+            else: self.status_label.configure(text="状态: 正在初始化..."); threading.Thread(target=pre_calculation_worker, args=(self.raw_queue, self.current_params)).start()
+        except Exception as e: 
+            messagebox.showerror("输入或文件错误", f"发生错误: {e}")
+            self.set_calculation_active(False)
+            self.status_label.configure(text="状态: 空闲")
     
     def proceed_with_correlation_check(self):
         corr_label, corr_val, grade = self.cache['corr_result']
@@ -2371,38 +2756,261 @@ v4.0.0 重大更新:
         self.update_textbox("\n--- 数据概览 ---\n"); self.update_textbox(f"有效SKU总数: {len(raw_data)}\n"); self.update_textbox(f"候选货架规格数量: {len(shelves)}\n")
         self.update_textbox(f"SKU尺寸(长*深*高)范围: {raw_data_with_ldh['L'].min():.0f}-{raw_data_with_ldh['L'].max():.0f} * {raw_data_with_ldh['D'].min():.0f}-{raw_data_with_ldh['D'].max():.0f} * {raw_data_with_ldh['H'].min():.0f}-{raw_data_with_ldh['H'].max():.0f} mm\n")
         self.update_textbox(f"货架尺寸(长*深)范围: {min(s['Lp'] for s in shelves):.0f}-{max(s['Lp'] for s in shelves):.0f} * {min(s['Dp'] for s in shelves):.0f}-{max(s['Dp'] for s in shelves):.0f} mm\n")
-        if messagebox.askyesno("继续计算?", f"数据概览已显示，L/D与H的相关性为 {grade}。\n是否继续运行核心优化算法？"): self.start_core_calculation()
-        else: self.update_textbox("用户选择取消操作。\n"); self.status_label.configure(text="状态: 已取消"); self.button_run.configure(state="normal")
+        if messagebox.askyesno("继续计算?", f"数据概览已显示，L/D与H的相关性为 {grade}。\n是否继续运行核心优化算法？"): 
+            self.start_core_calculation()
+        else: 
+            self.update_textbox("用户选择取消操作。\n")
+            self.status_label.configure(text="状态: 已取消")
+            self.set_calculation_active(False)
     
     # --- vReX 1.0.1 全新可视化仪表盘 ---
     def update_charts(self):
+        """异步图表更新入口"""
+        # 显示加载状态
+        self.charts_label.configure(text="正在生成图表，请稍候...")
+        self.charts_label.pack(expand=True)
+        
+        # 在后台线程中准备图表数据并生成图表
+        threading.Thread(target=self.chart_worker_thread, daemon=True).start()
+
+    def chart_worker_thread(self):
+        """图表生成工作线程"""
+        try:
+            # 阶段1：数据准备（后台线程）
+            chart_data = self.prepare_chart_data()
+            
+            # 阶段2：图表生成（后台线程）
+            chart_objects = self.generate_chart_objects(chart_data)
+            
+            # 阶段3：UI更新（主线程）
+            self.after_idle(lambda: self.update_chart_ui(chart_objects))
+            
+        except Exception as e:
+            # 错误处理（主线程）
+            self.after_idle(lambda: self.handle_chart_error(str(e)))
+
+    def prepare_chart_data(self):
+        """在后台线程中预处理图表所需的所有数据"""
+        if 'viz_data' not in self.cache:
+            raise ValueError("图表数据不可用")
+        
+        operable_data, _, final_solution = self.cache['viz_data']
+        
+        # 预计算所有图表需要的数据
+        chart_data = {
+            'solution_overview': self.prepare_solution_overview_data(final_solution),
+            'decision_basis': self.prepare_decision_basis_data(operable_data, final_solution),
+            'diagnostics': self.prepare_diagnostics_data(operable_data, final_solution),
+            'shelf_profile': self.prepare_shelf_profile_data(final_solution)
+        }
+        
+        return chart_data
+
+    def generate_chart_objects(self, chart_data):
+        """在后台线程中生成matplotlib图表对象"""
+        # 创建图表（降低DPI提升性能）
+        fig = Figure(figsize=(12, 10), dpi=80)
+        gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], width_ratios=[1,1], 
+                            hspace=0.4, wspace=0.3)
+        
+        # 创建子图
+        axes = [
+            fig.add_subplot(gs[0, 0]),  # 方案总览
+            fig.add_subplot(gs[0, 1]),  # 决策依据
+            fig.add_subplot(gs[1, 1]),  # 诊断
+            fig.add_subplot(gs[1, 0])   # 货架剖面
+        ]
+        
+        # 绘制图表（使用预处理的数据）
+        self.plot_solution_overview_optimized(axes[0], chart_data['solution_overview'])
+        self.plot_decision_basis_optimized(axes[1], chart_data['decision_basis'])
+        self.plot_sku_diagnostics_optimized(axes[2], chart_data['diagnostics'])
+        self.plot_shelf_profile_optimized(axes[3], chart_data['shelf_profile'])
+        
+        fig.tight_layout(pad=3.0)
+        return fig
+
+    def update_chart_ui(self, fig):
+        """在主线程中更新图表UI"""
         try:
             self.charts_label.pack_forget()
-            if self.canvas: self.canvas.get_tk_widget().destroy()
-            
-            fig = Figure(figsize=(12, 10), dpi=100)
-            gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], width_ratios=[1,1], hspace=0.4, wspace=0.3)
-            
-            ax1 = fig.add_subplot(gs[0, 0]) # Panel 1: Overview
-            ax2 = fig.add_subplot(gs[0, 1]) # Panel 2: Decision Basis
-            ax3 = fig.add_subplot(gs[1, 1]) # Panel 3: Diagnostics
-            ax4 = fig.add_subplot(gs[1, 0]) # Panel 4: Shelf Profile
-
-            operable_data, _, final_solution = self.cache['viz_data']
-            
-            self.plot_solution_overview(ax1, final_solution)
-            self.plot_decision_basis(ax2, operable_data, final_solution)
-            self.plot_sku_diagnostics(ax3, operable_data, final_solution)
-            self.plot_shelf_profile(ax4, final_solution)
-
-            fig.tight_layout(pad=3.0)
+            if self.canvas:
+                self.canvas.get_tk_widget().destroy()
+                
             self.canvas = FigureCanvasTkAgg(fig, master=self.charts_frame)
             self.canvas.draw()
             self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            
+            # 切换到图表页面
+            self.tabview.set("分析图表")
+            
+            # 图表更新完成后清理资源
+            self.after_idle(self.optimize_memory_usage)
+            
         except Exception as e:
-            self.charts_label.pack(expand=True)
-            self.charts_label.configure(text=f"图表绘制失败: {e}")
-            self.update_textbox(f"\n!!! 图表绘制失败: {e}!!!\n")
+            self.handle_chart_error(str(e))
+
+    def handle_chart_error(self, error_msg):
+        """处理图表生成错误"""
+        self.charts_label.pack(expand=True)
+        self.charts_label.configure(text=f"图表绘制失败: {error_msg}")
+        self.update_textbox(f"\n!!! 图表绘制失败: {error_msg}!!!\n")
+
+    # 数据预处理方法
+    def prepare_solution_overview_data(self, final_solution):
+        """预处理方案总览数据"""
+        specs = final_solution['final_shelves']
+        counts = final_solution['counts']
+        
+        return {
+            'labels': [f"规格 {i+1}\n{s['Lp']:.0f}L×{s['Dp']:.0f}D×{s['H']:.0f}H" 
+                      for i, s in enumerate(specs)],
+            'counts': counts,
+            'total_shelves': sum(counts),
+            'coverage_count': final_solution['coverage_count'] * 100,
+            'coverage_volume': final_solution['coverage_volume'] * 100
+        }
+
+    def prepare_decision_basis_data(self, operable_data, final_solution):
+        """预处理决策依据数据"""
+        return {
+            'scatter_data': {
+                'x': operable_data['L'].values,
+                'y': operable_data['D'].values,
+                'c': operable_data['H'].values
+            },
+            'rectangles': list({(s['Lp'], s['Dp']) for s in final_solution['final_shelves']})
+        }
+
+    def prepare_diagnostics_data(self, operable_data, final_solution):
+        """预处理诊断数据"""
+        total_skus = len(operable_data)
+        placed_ids = final_solution['placed_sku_ids']
+        unplaced_df = operable_data[~operable_data['sku_id'].isin(placed_ids)]
+        
+        placed_count = len(placed_ids)
+        unplaced_count = len(unplaced_df)
+
+        labels = ['成功安放']
+        sizes = [placed_count]
+        
+        if unplaced_count > 0:
+            # 简化未安放原因分析以提高性能
+            labels.extend(['未能安放'])
+            sizes.extend([unplaced_count])
+
+        return {
+            'labels': labels,
+            'sizes': sizes,
+            'total_skus': total_skus
+        }
+
+    def prepare_shelf_profile_data(self, final_solution):
+        """预处理货架剖面数据"""
+        if not final_solution['counts'] or sum(final_solution['counts']) == 0:
+            return {'empty': True}
+        
+        counts = final_solution['counts']
+        spec_idx = np.argmax(counts)
+        spec = final_solution['final_shelves'][spec_idx]
+        
+        return {
+            'empty': False,
+            'spec': spec,
+            'spec_idx': spec_idx,
+            'count': counts[spec_idx]
+        }
+
+    # 优化的绘图方法
+    def plot_solution_overview_optimized(self, ax, data):
+        """优化的方案总览绘制"""
+        ax.set_title("图表一：方案总览与核心指标", fontweight="bold")
+        
+        y_pos = np.arange(len(data['labels']))
+        bars = ax.barh(y_pos, data['counts'], align='center',
+                      color=plt.cm.viridis(np.linspace(0.4, 0.9, len(data['labels']))))
+        ax.set_yticks(y_pos, labels=data['labels'])
+        ax.invert_yaxis()
+        ax.set_xlabel("货架需求数量 (个)")
+        ax.bar_label(bars, padding=3)
+        ax.grid(axis='x', linestyle='--', alpha=0.6)
+        
+        # 汇总信息
+        summary_text = (f"货架总数: {data['total_shelves']} 个\n"
+                       f"SKU数量覆盖率: {data['coverage_count']:.2f}%\n"
+                       f"SKU体积覆盖率: {data['coverage_volume']:.2f}%")
+        
+        ax.text(0.95, 0.05, summary_text, transform=ax.transAxes, fontsize=10,
+                verticalalignment='bottom', horizontalalignment='right',
+                bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5))
+
+    def plot_decision_basis_optimized(self, ax, data):
+        """优化的决策依据绘制"""
+        ax.set_title("图表二：决策依据 (SKU尺寸分布)", fontweight="bold")
+        
+        # 散点图
+        sc = ax.scatter(data['scatter_data']['x'], data['scatter_data']['y'], 
+                       c=data['scatter_data']['c'], cmap='viridis', alpha=0.6, s=15)
+        
+        # 货架矩形
+        colors = plt.cm.autumn(np.linspace(0, 1, len(data['rectangles'])))
+        for i, (lp, dp) in enumerate(data['rectangles']):
+            rect = patches.Rectangle((0, 0), lp, dp, linewidth=2, edgecolor=colors[i], 
+                                   facecolor='none', label=f"推荐规格 {lp:.0f}×{dp:.0f}")
+            ax.add_patch(rect)
+        
+        ax.set_xlabel("SKU 长度 (mm)")
+        ax.set_ylabel("SKU 深度 (mm)")
+        ax.legend(loc='upper right')
+        ax.grid(True, linestyle='--', alpha=0.6)
+        
+        # 颜色条
+        cbar = plt.colorbar(sc, ax=ax)
+        cbar.set_label('SKU 高度 (mm)')
+
+    def plot_sku_diagnostics_optimized(self, ax, data):
+        """优化的SKU诊断绘制"""
+        ax.set_title("图表三：SKU安置情况诊断", fontweight="bold")
+
+        colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(data['labels'])))
+        wedges, _ = ax.pie(data['sizes'], startangle=90, colors=colors, radius=1.2)
+        ax.axis('equal')
+
+        # 清晰的图例
+        legend_labels = [f'{label} - {size}个 ({size/data["total_skus"]:.1%})' 
+                        for label, size in zip(data['labels'], data['sizes'])]
+        ax.legend(wedges, legend_labels, title="SKU 分类", loc="center left",
+                 bbox_to_anchor=(1, 0, 0.5, 1), fontsize='small')
+
+    def plot_shelf_profile_optimized(self, ax, data):
+        """优化的货架剖面绘制"""
+        ax.set_title("图表四：单货架装箱效果剖面图", fontweight="bold")
+
+        if data['empty']:
+            ax.text(0.5, 0.5, "无货架分配", ha='center', va='center')
+            return
+
+        spec = data['spec']
+        params = self.current_params
+        
+        # 简化的货架剖面图
+        ax.set_xlim(-0.1 * spec['Lp'], 1.1 * spec['Lp'])
+        ax.set_ylim(0, params['warehouse_h'])
+        
+        # 基本结构
+        ax.axhline(0, color='gray', linewidth=4)
+        ax.add_patch(patches.Rectangle((0, 0), spec['Lp'], spec['H'], 
+                                     facecolor='lightblue', edgecolor='black', alpha=0.7))
+        
+        # 信息文本
+        info_text = (f"示意规格: {spec['Lp']:.0f}×{spec['Dp']:.0f}×{spec['H']:.0f}\n"
+                    f"总需求: {data['count']}个")
+        ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=9,
+               verticalalignment='top', bbox=dict(boxstyle='round', fc='aliceblue', alpha=0.8))
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # 保持原有的详细绘图方法（如果需要的话）
 
     def plot_solution_overview(self, ax, final_solution):
         ax.set_title("图表一：方案总览与核心指标", fontweight="bold")
@@ -2624,16 +3232,41 @@ v4.0.0 重大更新:
         setattr(self, f'selected_{file_type}_file', path); label.configure(text=os.path.basename(path), text_color="white")
 
     def update_textbox(self, text, clear=False):
-        self.output_textbox.configure(state="normal")
-        if clear: self.output_textbox.delete("1.0", "end")
-        self.output_textbox.insert("end", text); self.output_textbox.see("end")
-        self.output_textbox.configure(state="disabled"); self.update_idletasks()
+        """保持向后兼容的文本更新方法"""
+        if clear:
+            self.pending_text_updates.clear()
+            self.update_textbox_immediate("", clear=True)
+        
+        self.add_to_text_buffer(text)
+        
+        # 如果文本以换行符结尾，立即刷新
+        if text and text.endswith('\n'):
+            self.flush_pending_text_updates()
+
+    def update_textbox_immediate(self, text, clear=False):
+        """立即更新文本框（优化版本）"""
+        try:
+            self.output_textbox.configure(state="normal")
+            if clear:
+                self.output_textbox.delete("1.0", "end")
+            
+            self.output_textbox.insert("end", text)
+            
+            # 优化滚动：只在必要时滚动
+            if text and (text.endswith('\n') or clear):
+                self.output_textbox.see("end")
+            
+            self.output_textbox.configure(state="disabled")
+            
+            # 移除强制更新，改为更温和的更新
+            # self.update_idletasks()  # 注释掉这行
+            
+        except Exception as e:
+            print(f"文本更新错误: {e}")
 
     def update_progress(self, current, total, start_time, stage_text):
-        progress = current / total if total > 0 else 0; self.progressbar.set(progress); elapsed_time = time.time() - start_time; remaining_text = ""
-        if current > 5 and progress > 0.01:
-            remaining_time = (elapsed_time / current) * (total - current); remaining_text = f" | 剩余: {remaining_time:.0f}s"
-        short_stage_text = stage_text if len(stage_text) <= 30 else stage_text[:27] + "..."; self.status_label.configure(text=f"状态: {short_stage_text} | 已用: {elapsed_time:.0f}s{remaining_text}")
+        """保持向后兼容的进度更新方法，内部使用限流版本"""
+        self.update_progress_throttled(current, total, start_time, stage_text)
 
     def start_core_calculation(self):
         self.status_label.configure(text="状态: 正在初始化核心计算...")
@@ -2644,7 +3277,7 @@ v4.0.0 重大更新:
         if 'packing_summary' in self.cache:
             self.current_params['packing_summary'] = self.cache['packing_summary']
         
-        threading.Thread(target=calculation_worker, args=(self.queue, self.current_params, self.cache['raw_data'], self.cache['shelves'], agg_data_cache)).start()
+        threading.Thread(target=calculation_worker, args=(self.raw_queue, self.current_params, self.cache['raw_data'], self.cache['shelves'], agg_data_cache)).start()
 
     def display_results(self, final_shelves, solution, coverage_target, packing_summary=None):
         try: params = self.current_params; usable_vertical_space = params['warehouse_h'] - params['bottom_clearance']
