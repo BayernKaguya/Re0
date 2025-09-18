@@ -1401,7 +1401,7 @@ def final_placement_with_individual_skus_mixed(operable_data, final_shelves, pac
     """
     q.put(("log", "开始基于混合装箱装托模式进行精确分配与装箱...\n"))
     num_shelf_types = len(final_shelves)
-    # assignments的结构：{shelf_idx: [(sku_dict, placed_width), ...]}
+    # assignments的结构：{shelf_idx: [(sku_dict, placed_width, actual_count), ...]}
     assignments = {i: [] for i in range(num_shelf_types)}
     sku_shelf_assignments = {}
 
@@ -1873,25 +1873,43 @@ def calculate_ldh_utilization(final_solution, params):
         if shelf_count == 0 or not items_on_this_shelf:
             log_lines.append("  - 未分配SKU，利用率均为 0%"); continue
         
-        # vReX 1.0.1 修正: 直接处理精确的 (sku_dict, placed_width) 元组列表
-        total_placed_width = sum(item[1] for item in items_on_this_shelf)
-        total_item_count = len(items_on_this_shelf)
+        # vReX 1.0.1 修正: 处理 (sku_dict, placed_width, actual_count) 三元组列表
+        total_placed_width = sum(item[1] * item[2] for item in items_on_this_shelf)  # 宽度×数量
+        total_item_count = sum(item[2] for item in items_on_this_shelf)  # 实际业务数量
         
-        # 修正深度利用率计算：根据实际放置情况计算使用的深度
+        # 修正深度利用率计算：根据实际放置情况计算使用的深度，按业务数量加权
         total_depth_sum = 0
         for item in items_on_this_shelf:
             sku_dict = item[0]
             placed_width = item[1]
+            actual_count = item[2]
+            
+            # 根据使用的数据类型选择正确的L和D
+            data_type = sku_dict.get('used_data_type', 'pallet')
+            if data_type == 'box':
+                sku_l, sku_d = sku_dict['box_l'], sku_dict['box_d']
+            else:
+                sku_l, sku_d = sku_dict['pallet_l'], sku_dict['pallet_d']
+            
             # 判断是否旋转：如果放置宽度等于SKU长度，则未旋转；否则已旋转
-            if abs(placed_width - sku_dict['L']) < 1:  # 允许1mm误差
+            if abs(placed_width - sku_l) < 1:  # 允许1mm误差
                 # 未旋转，使用原始深度
-                actual_depth = sku_dict['D']
+                actual_depth = sku_d
             else:
                 # 已旋转，长度变成了深度
-                actual_depth = sku_dict['L']
-            total_depth_sum += actual_depth
+                actual_depth = sku_l
+            total_depth_sum += actual_depth * actual_count  # 按业务数量加权
         
-        total_sku_h_sum = sum(item[0]['H'] for item in items_on_this_shelf)
+        total_sku_h_sum = 0
+        for item in items_on_this_shelf:
+            sku_dict = item[0]
+            actual_count = item[2]
+            data_type = sku_dict.get('used_data_type', 'pallet')
+            if data_type == 'box':
+                sku_h = sku_dict['box_h']
+            else:
+                sku_h = sku_dict['pallet_h']
+            total_sku_h_sum += sku_h * actual_count  # 按业务数量加权
 
         total_available_length = (shelf_spec['Lp'] - 2 * SIDE_SPACING) * shelf_count
         l_util = total_placed_width / total_available_length if total_available_length > 0 else 0
@@ -1901,10 +1919,14 @@ def calculate_ldh_utilization(final_solution, params):
         d_util = weighted_avg_depth / shelf_spec['Dp'] if shelf_spec['Dp'] > 0 else 0
         log_lines.append(f"  - D-利用率 (深度): {d_util:.2%}")
 
-        # 修正高度利用率计算：使用货架净高度而不是仓库总高度
+        # 修正高度利用率计算：使用货架净高度而不是仓库总高度，按业务数量加权平均
         avg_sku_h = total_sku_h_sum / total_item_count if total_item_count > 0 else 0
         h_util = avg_sku_h / shelf_spec['H'] if shelf_spec['H'] > 0 else 0
         log_lines.append(f"  - H-利用率 (高度): {h_util:.2%}")
+        
+        # 添加业务数量统计信息
+        log_lines.append(f"  - 业务数量统计: {total_item_count} 件")
+        log_lines.append(f"  - SKU种类数: {len(items_on_this_shelf)} 种")
     log_lines.append("-" * 70); return "\n".join(log_lines)
 
 # 【简化改造】将预计算函数改为同步版本
