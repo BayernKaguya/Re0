@@ -15,7 +15,7 @@ from itertools import combinations, groupby
 import warnings
 import time
 import json
-import asyncio  # 【asyncio改造】添加异步编程支持
+import asyncio  # 已移除，保留兼容
 
 # --- 可视化库导入 ---
 import matplotlib.pyplot as plt
@@ -43,6 +43,11 @@ LAST_SESSION_FILE = "last_session_params.json"
 # #############################################################################
 
 def read_excel_data(excel_file, sku_sheet, cols, can_box_col, can_pallet_col, box_count_col, 
+# 读取SKU数据（Excel导入）
+# 基本逻辑：从Excel指定sheet读取SKU及装箱/装托相关参数，校验必要列，返回DataFrame。
+# 优点：灵活支持多种列名和预设，便于数据清洗。
+# 局限：依赖Excel格式，列名需准确。
+# 上下文：为后续装箱/装托判定和分组提供原始数据。
                    pallet_count_col, boxes_per_pallet_col, pallet_preset, box_preset):
     """
     从Excel文件的指定Sheet读取SKU数据，支持装箱装托相关列
@@ -151,6 +156,11 @@ def read_excel_data(excel_file, sku_sheet, cols, can_box_col, can_pallet_col, bo
 
 
 def read_shelf_params(excel_file, shelf_sheet, shelf_type_col, shelf_cols):
+# 读取货架参数（Excel导入）
+# 基本逻辑：从Excel指定sheet读取货架规格，校验并重命名关键列，返回参数字典列表。
+# 优点：支持多规格货架，便于后续分组。
+# 局限：依赖Excel格式，列名需准确。
+# 上下文：为货架分组和装箱/装托分配提供基础数据。
     """
     从Excel文件的指定Sheet读取货架参数
     
@@ -220,6 +230,11 @@ import pandas as pd
 import time
 
 def analyze_packing_decision(data, pallet_decimal_threshold, q):
+# 装箱/装托判定算法
+# 基本逻辑：根据SKU的可装箱/可装托标识（Y/N），结合装托数小数部分，判定每个SKU的分组。
+# 优点：规则清晰，便于分组处理。
+# 局限：对异常数据（都不可装）需特殊处理。
+# 上下文：决定后续分组与装箱/装托流程。
     """
     装箱/装托判定算法 - 基于两列Y/N控制
     
@@ -358,6 +373,11 @@ def analyze_packing_decision(data, pallet_decimal_threshold, q):
 
 
 def split_data_by_packing_decision(data, packing_decisions, q):
+# 按装箱/装托判定分组SKU数据
+# 基本逻辑：根据判定结果，将SKU分为纯装箱、纯装托、混装三组，便于后续分别处理。
+# 优点：分组清晰，便于针对性优化。
+# 局限：混装组需特殊处理，逻辑复杂。
+# 上下文：为分组独立计算和货架分配做准备。
     """
     根据装箱装托判定结果将数据分组，并为每组添加对应的L、D、H、W、V列
     
@@ -478,6 +498,11 @@ def split_data_by_packing_decision(data, packing_decisions, q):
 
 
 def split_shelves_by_type(shelves, pallet_char, box_char, q):
+# 按货架类型分组
+# 基本逻辑：根据货架类型标识，将货架分为装托组和装箱组。
+# 优点：分组明确，便于后续匹配SKU分组。
+# 局限：其他类型货架需额外处理。
+# 上下文：为分组独立计算和货架筛选做准备。
     """
     根据货架类型标识将货架分组
     
@@ -526,6 +551,11 @@ def split_shelves_by_type(shelves, pallet_char, box_char, q):
 
 
 def process_grouped_calculations(grouped_data, grouped_shelves, coverage_target, allow_rotation, params, q, packing_decisions):
+# 分组独立运行L&D互补算法
+# 基本逻辑：对每个SKU/货架分组分别运行聚合与L&D互补算法，得到各组最优方案。
+# 优点：分组独立，提升计算效率和针对性。
+# 局限：混装组处理复杂，需聚合和特殊分配。
+# 上下文：主流程核心，决定最终分配方案。
     """
     分组独立运行L&D互补算法
     
@@ -632,6 +662,11 @@ def process_grouped_calculations(grouped_data, grouped_shelves, coverage_target,
 
 
 def aggregate_sku_data(data, packing_decisions=None):
+# SKU数据聚合
+# 基本逻辑：按LDHWV组合分组SKU，统计实际业务数量，便于后续装箱/装托计算。
+# 优点：聚合后数据简洁，便于批量处理。
+# 局限：混装SKU需特殊ID处理。
+# 上下文：为L&D互补算法和分配函数提供输入。
     """
     将SKU数据聚合为计算所需的格式
     按照L、D、H、W、V的组合进行分组，计算每组的实际业务数量
@@ -697,6 +732,11 @@ def aggregate_sku_data(data, packing_decisions=None):
 
 
 def add_unified_ldh_columns(data, packing_decisions):
+# 添加统一LDHWV列
+# 基本逻辑：根据装箱/装托决策，为每个SKU选择合适的LDHWV参数，便于统一分析。
+# 优点：统一数据格式，便于相关性分析和高度计算。
+# 局限：依赖决策准确性。
+# 上下文：为相关性分析和高度优化提供基础。
     """
     为数据添加统一的L、D、H、W、V列，用于相关性分析和H计算函数
     
@@ -769,6 +809,11 @@ def add_unified_ldh_columns(data, packing_decisions):
 
 
 def filter_shelves_by_packing_decision(shelves, packing_summary, pallet_char, box_char, q):
+# 按装箱/装托需求筛选货架
+# 基本逻辑：根据分组需求，筛选出需要的货架类型。
+# 优点：精准匹配SKU分组需求。
+# 局限：需求判断依赖分组结果。
+# 上下文：为最终分配和优化筛选货架。
     """
     根据装箱装托判定结果筛选需要的货架类型
     
@@ -807,6 +852,11 @@ def filter_shelves_by_packing_decision(shelves, packing_summary, pallet_char, bo
 
 
 def main_calculation_with_grouping(data, shelves, pallet_decimal_threshold, coverage_target, 
+# 主流程入口（分组+计算）
+# 基本逻辑：串联装箱/装托判定、分组、货架分组、分组独立计算等步骤，输出完整结果。
+# 优点：结构清晰，便于扩展和调试。
+# 局限：依赖各子模块准确性。
+# 上下文：整个算法的主控入口。
                                   allow_rotation, pallet_char, box_char, params, q):
     """
     重构后的主计算流程
@@ -868,6 +918,11 @@ def main_calculation_with_grouping(data, shelves, pallet_decimal_threshold, cove
 
 
 def aggregate_skus_by_shelf_type(data, packing_decisions, shelf_type, num_bins):
+# 按货架类型聚合SKU数据
+# 基本逻辑：根据货架类型和装箱/装托决策筛选SKU，分箱聚合，便于后续分配。
+# 优点：针对性强，便于货架优化。
+# 局限：分箱数量需合理设置。
+# 上下文：为货架分配和空间利用率分析做准备。
     """
     根据货架类型和装箱装托决策进行数据聚合
     
@@ -926,6 +981,11 @@ def aggregate_skus_by_shelf_type(data, packing_decisions, shelf_type, num_bins):
     return agg_data
 
 def get_fittable_skus_for_shelf(agg_data, shelf, allow_rotation):
+# 货架可容纳SKU筛选
+# 基本逻辑：判断每个SKU能否放入指定货架（支持旋转），返回可容纳SKU列表。
+# 优点：筛选高效，支持多种规格。
+# 局限：未考虑复杂装箱顺序。
+# 上下文：为装箱/装托分配和空间利用率计算做准备。
     fittable_skus = []
     for _, sku_group in agg_data.iterrows():
         l, d, w = sku_group['L'], sku_group['D'], sku_group['W']
@@ -937,11 +997,19 @@ def get_fittable_skus_for_shelf(agg_data, shelf, allow_rotation):
     return fittable_skus
 
 def ld_calculator_single(agg_data, shelves, coverage_target, allow_rotation, q):
+# 单一L&D规格最优货架选择
+# 基本逻辑：遍历所有货架规格，筛选覆盖率最高且空间利用率最优的方案。
+# 优点：简单直接，适合单一规格场景。
+# 局限：不适合SKU多样化场景。
+# 上下文：为单规格分配和空间利用率分析提供方案。
     best_shelf, min_shelf_count = None, float('inf')
     total_sku_count = agg_data['count'].sum(); total_sku_volume = (agg_data['V'] * agg_data['count']).sum()
     target_count = total_sku_count * coverage_target; target_volume = total_sku_volume * coverage_target
     best_attempt_shelf, max_achieved_count_coverage, max_achieved_volume_coverage = None, 0.0, 0.0
     total_shelves_to_eval = len(shelves); start_time = time.time()
+    # 优化进度更新频率
+    update_interval = max(1, total_shelves_to_eval // 50)  # 确保至少有50次进度更新
+    
     for i, shelf in enumerate(shelves):
         fittable_skus = get_fittable_skus_for_shelf(agg_data, shelf, allow_rotation)
         placed_count = sum(item[2] for item in fittable_skus)
@@ -951,8 +1019,13 @@ def ld_calculator_single(agg_data, shelves, coverage_target, allow_rotation, q):
             max_achieved_count_coverage = current_count_coverage
             max_achieved_volume_coverage = placed_volume / total_sku_volume if total_sku_volume > 0 else 0
             best_attempt_shelf = shelf
+        
+        # 更频繁和均匀的进度更新
+        if i % update_interval == 0 or i == total_shelves_to_eval - 1:
+            status_text = "跳过" if (total_sku_count == 0 or placed_count < target_count or placed_volume < target_volume) else "评估"
+            q.put(("progress", (i + 1, total_shelves_to_eval, start_time, f"评估L&D规格 {i+1}/{total_shelves_to_eval} ({status_text})")))
+        
         if total_sku_count == 0 or placed_count < target_count or placed_volume < target_volume:
-            q.put(("progress", (i + 1, total_shelves_to_eval, start_time, f"评估L&D规格 {i+1}/{total_shelves_to_eval} (跳过)")))
             continue
         shelf_count = run_bulk_ffd_packing(fittable_skus, shelf['Lp'])
         if shelf_count < min_shelf_count:
@@ -962,6 +1035,11 @@ def ld_calculator_single(agg_data, shelves, coverage_target, allow_rotation, q):
     else: return ("failure", {"shelf": best_attempt_shelf, "count_coverage": max_achieved_count_coverage, "volume_coverage": max_achieved_volume_coverage})
 
 def ld_calculator_complementary(agg_data, shelves, coverage_target, allow_rotation, q, params):
+# L&D互补算法（双规格优化）
+# 基本逻辑：在多货架规格中寻找两种互补方案，提升整体覆盖率和空间利用率。
+# 优点：适合SKU多样化场景，提升整体效果。
+# 局限：计算复杂度高，需合理参数设置。
+# 上下文：主流程分组独立计算的核心算法。
     """
     L&D互补算法：寻找两种互补的L&D规格
     
@@ -999,6 +1077,9 @@ def ld_calculator_complementary(agg_data, shelves, coverage_target, allow_rotati
     
     # 生成所有货架对的组合
     shelf_combinations = list(combinations(shelves, 2))
+    # 优化进度更新频率
+    total_combinations = len(shelf_combinations)
+    update_interval = max(1, total_combinations // 100)  # 确保至少有100次进度更新
     
     for i, (shelf1, shelf2) in enumerate(shelf_combinations):
         # 检查两个货架是否具有互补性
@@ -1062,8 +1143,8 @@ def ld_calculator_complementary(agg_data, shelves, coverage_target, allow_rotati
             min_total_shelf_count = total_shelf_count
             best_shelf_pair = (shelf1, shelf2)
         
-        if i % 10 == 0:
-            q.put(("progress", (i + 1, len(shelf_combinations), start_time, f"评估货架组合 {i+1}/{len(shelf_combinations)}")))
+        if i % update_interval == 0 or i == total_combinations - 1:
+            q.put(("progress", (i + 1, total_combinations, start_time, f"评估货架组合 {i+1}/{total_combinations}")))
     
     if best_shelf_pair:
         q.put(("log", f"L&D互补算法完成，找到最优货架对\n"))
@@ -1076,6 +1157,11 @@ def ld_calculator_complementary(agg_data, shelves, coverage_target, allow_rotati
         })
 
 def calculate_three_dimensional_score(solution, params):
+# 三维空间利用率评分
+# 基本逻辑：根据分配结果，计算数量、体积、高度三维利用率加权总分。
+# 优点：综合评价方案优劣。
+# 局限：权重需合理设置，部分场景下不敏感。
+# 上下文：为高度优化和最终方案评价提供指标。
     if solution['status'] != 'success': return 0.0, {'count_util': 0.0, 'volume_util': 0.0, 'height_util': 0.0}
     count_utilization = solution.get('coverage_count', 0); volume_utilization = solution.get('coverage_volume', 0)
     warehouse_h = params.get('warehouse_h', 6000); bottom_clearance = params.get('bottom_clearance', 150)
@@ -1102,6 +1188,11 @@ def calculate_three_dimensional_score(solution, params):
     return total_score, metrics
 
 def h_calculator_three_dimensional(agg_data, operable_data, best_ld_shelf, coverage_target, allow_rotation, params, q):
+# 智能候选高度组合生成
+# 基本逻辑：根据SKU高度分布，生成分位点候选高度，评估组合空间利用率。
+# 优点：自动筛选高效高度组合。
+# 局限：分位点选择影响结果。
+# 上下文：为高度优化和货架分配提供候选方案。
     q.put(("log", "--- 步骤 3a: 正在生成智能候选高度组合 ---\n")); h_max = params['h_max']
     min_height = operable_data['H'].min(); max_height = operable_data['H'].max()
     percentiles = [10, 25, 40, 50, 60, 75, 85, 90, 95]
@@ -1158,11 +1249,24 @@ def h_calculator_three_dimensional(agg_data, operable_data, best_ld_shelf, cover
     q.put(("log", f"\n--- 步骤 3 完成：最优高度组合已确定 ---\n")); return sorted(list(best_combo)), evaluation_details
 
 def h_calculator_coverage_driven(data, h_max, p1, p2):
+# 覆盖率驱动高度筛选
+# 基本逻辑：根据SKU高度分布的分位点，筛选覆盖率较高的候选高度。
+# 优点：快速筛选，适合初步优化。
+# 局限：分位点需合理设置。
+# 上下文：为高度优化和边界效应分析做准备。
     h1 = np.percentile(data['H'], p1); h2 = np.percentile(data['H'], p2); h1, h2 = min(h1, h_max), min(h2, h_max); return sorted(list(set([round(h1), round(h2)]))), []
 
 def calculate_boundary_effects(data, h_max, step_size, volume_weight, q):
+# 高度边界效应分析
+# 基本逻辑：遍历高度区间，分析每一步对覆盖率和体积的提升效应。
+# 优点：揭示高度变化对空间利用的影响。
+# 局限：步长和权重需合理设置。
+# 上下文：为候选高度筛选和组合优化做准备。
     heights = np.arange(data['H'].min(), h_max + step_size, step_size); results = []; last_count, last_volume = 0, 0
     total_steps, start_time = len(heights), time.time()
+    # 优化进度更新频率
+    update_interval = max(1, total_steps // 50)  # 确保至少有50次进度更新
+    
     for i, h in enumerate(heights):
         covered_data = data[data['H'] <= h]; current_count, current_volume = len(covered_data), covered_data['V'].sum()
         delta_count, delta_volume = current_count - last_count, current_volume - last_volume
@@ -1170,10 +1274,16 @@ def calculate_boundary_effects(data, h_max, step_size, volume_weight, q):
         norm_delta_volume = delta_volume / data['V'].sum() if data['V'].sum() > 0 else 0
         effect = (1 - volume_weight) * norm_delta_count + volume_weight * norm_delta_volume
         results.append({'h': h, 'effect': effect}); last_count, last_volume = current_count, current_volume
-        if i % 10 == 0: q.put(("progress", (i + 1, total_steps, start_time, f"计算边界效应中 {i+1}/{total_steps}")))
+        if i % update_interval == 0 or i == total_steps - 1: 
+            q.put(("progress", (i + 1, total_steps, start_time, f"计算边界效应中 {i+1}/{total_steps}")))
     return pd.DataFrame(results)
 
 def identify_candidate_heights(boundary_effects, min_diff, num_candidates=15):
+# 候选高度点筛选
+# 基本逻辑：从边界效应分析结果中筛选差异足够大的候选高度。
+# 优点：避免高度过于接近，提升组合多样性。
+# 局限：参数设置影响筛选结果。
+# 上下文：为高度组合优化和货架分配做准备。
     top_effects = boundary_effects.nlargest(num_candidates * 3, 'effect'); candidates = []
     for _, row in top_effects.iterrows():
         h = row['h']
@@ -1182,12 +1292,20 @@ def identify_candidate_heights(boundary_effects, min_diff, num_candidates=15):
     return sorted(candidates)
 
 def h_calculator_boundary_driven(agg_data, operable_data, best_ld_shelf, h_max, coverage_target, allow_rotation, params, q, best_theoretical_ld, best_theoretical_coverage):
+# 边界驱动高度组合优化
+# 基本逻辑：结合边界效应和候选高度，枚举组合，评估空间利用率，选最优方案。
+# 优点：理论覆盖率高，适合复杂场景。
+# 局限：组合数量大，计算量高。
+# 上下文：为最终货架分配和空间利用率分析提供优化方案。
     q.put(("log", "--- 步骤 3a: 正在计算高度边界效应 ---\n")); effects_df = calculate_boundary_effects(operable_data, h_max, params['height_step'], params['volume_weight'], q)
     q.put(("log", "--- 步骤 3b: 正在筛选候选高度点 ---\n")); candidate_heights = identify_candidate_heights(effects_df, params['min_height_diff'])
     if len(candidate_heights) < 2: raise ValueError(f"未能找到满足最小差值({params['min_height_diff']}mm)的候选高度。\n\n【建议】\n请尝试在左侧配置中减小'最小高度差值'参数的值再试。")
     q.put(("log", f"发现 {len(candidate_heights)} 个候选高度点: {[f'{h:.0f}' for h in candidate_heights]}\n")); height_combinations = list(combinations(candidate_heights, 2))
     q.put(("log", f"--- 步骤 3c: 正在评估 {len(height_combinations)} 种高度组合 ---\n"))
     best_combo, min_total_shelves = None, float('inf'); best_attempt_combo, max_coverage_in_h_step = None, 0.0; total_combos, start_time = len(height_combinations), time.time()
+    # 优化进度更新频率
+    update_interval = max(1, total_combos // 50)  # 确保至少有50次进度更新
+    
     for i, (h1, h2) in enumerate(height_combinations):
         ld_specs = best_ld_shelf if isinstance(best_ld_shelf, (list, tuple)) else (best_ld_shelf, best_ld_shelf)
 
@@ -1209,7 +1327,11 @@ def h_calculator_boundary_driven(agg_data, operable_data, best_ld_shelf, h_max, 
         solution = final_allocation_and_counting(agg_data, shelves_to_evaluate, coverage_target, allow_rotation)
         if solution['coverage_count'] > max_coverage_in_h_step: max_coverage_in_h_step, best_attempt_combo = solution['coverage_count'], (h1, h2)
         if solution['status'] == 'success' and sum(solution['counts']) < min_total_shelves: min_total_shelves, best_combo = sum(solution['counts']), (h1, h2)
-        q.put(("progress", (i + 1, total_combos, start_time, f"评估高度组合 {i+1}/{total_combos}")))
+        
+        # 更频繁和均匀的进度更新
+        if i % update_interval == 0 or i == total_combos - 1:
+            q.put(("progress", (i + 1, total_combos, start_time, f"评估高度组合 {i+1}/{total_combos}")))
+            
     if best_combo is None:
         if best_attempt_combo is None: raise ValueError("在评估高度组合时发生未知错误，未能找到任何有效的组合。")
         h1_best, h2_best = sorted(list(best_attempt_combo))
@@ -1266,6 +1388,11 @@ def correlation_analysis(data):
 
 
 def final_placement_with_individual_skus_mixed(operable_data, final_shelves, packing_decisions, allow_rotation, q):
+# 混合模式SKU精确分配
+# 基本逻辑：根据SKU装箱/装托决策，分别用对应LDHWV参数，分配到货架，统计空间利用率。
+# 优点：精确分配，兼容多种SKU类型。
+# 局限：混装SKU处理复杂，需特殊ID。
+# 上下文：为最终分配和空间利用率分析做准备。
     """
     混合模式最终精确装箱与统计函数
     - 根据货架类型和SKU的装箱装托决策使用相应的LDHWV数据
@@ -1490,6 +1617,11 @@ def final_placement_with_individual_skus_mixed(operable_data, final_shelves, pac
     }
 
 def final_placement_with_individual_skus(operable_data, final_shelves, allow_rotation, q):
+# 真实SKU精确分配
+# 基本逻辑：逐一分配SKU到货架，优先三维体积利用率最高方案，统计需求数量。
+# 优点：精确，结果可追溯。
+# 局限：未聚合SKU时计算量大。
+# 上下文：为最终分配和空间利用率分析做准备。
     """
     v3.6.2 (已修正): 最终精确装箱与统计函数
     - 使用未经聚合的`operable_data`进行计算，确保结果精确。
@@ -1581,6 +1713,11 @@ def final_placement_with_individual_skus(operable_data, final_shelves, allow_rot
     }
 
 def final_allocation_and_counting(agg_data, final_shelves, coverage_target, allow_rotation):
+# 聚合SKU分配与统计
+# 基本逻辑：按聚合SKU分组，分配到货架，统计覆盖率和空间利用率。
+# 优点：批量处理，效率高。
+# 局限：聚合精度影响分配结果。
+# 上下文：为最终分配和空间利用率分析做准备。
     num_shelf_types = len(final_shelves)
     assignments = {i: [] for i in range(num_shelf_types)}
     sku_shelf_assignments = {}
@@ -1612,6 +1749,11 @@ def final_allocation_and_counting(agg_data, final_shelves, coverage_target, allo
     return {'status': 'success', 'counts': final_counts, 'coverage_count': coverage_count, 'coverage_volume': coverage_volume, 'placed_sku_ids': placed_sku_ids, 'sku_shelf_assignments': sku_shelf_assignments, 'assignments': assignments, 'final_shelves': final_shelves}
 
 def calculate_fit_capacity(shelf_length, bin_state, item_width):
+# 计算货架可容纳数量（宽度方向）
+# 基本逻辑：根据货架剩余长度和SKU宽度，计算可放数量，考虑边距和间距。
+# 优点：高效，适合批量装箱。
+# 局限：未考虑复杂装箱顺序。
+# 上下文：为装箱算法和空间利用率分析做准备。
     if item_width <= 0: return 0
     count_on_shelf = bin_state['count']
     if count_on_shelf == 0:
@@ -1626,6 +1768,11 @@ def calculate_fit_capacity(shelf_length, bin_state, item_width):
         return math.floor((shelf_length - current_used_len) / item_cost)
 
 def run_bulk_ffd_packing(sku_groups, shelf_length):
+# 批量FFD装箱算法
+# 基本逻辑：按宽度降序分组，依次装箱，优先填满已有货架，剩余新开货架。
+# 优点：高效，近似最优。
+# 局限：未考虑多维装箱和复杂顺序。
+# 上下文：为货架分配和空间利用率分析做准备。
     if not sku_groups: return 0
     sorted_groups = sorted(sku_groups, key=lambda x: x[1], reverse=True); bins = []
     for _, width, count in sorted_groups:
@@ -1650,6 +1797,11 @@ def run_bulk_ffd_packing(sku_groups, shelf_length):
     return len(bins)
 
 def get_detailed_unplaced_reasons_by_sku_id(unplaced_skus, final_shelves, h_max, allow_rotation):
+# 未安放SKU原因分析
+# 基本逻辑：分析未能安放SKU的具体原因，包括尺寸超限、类型不匹配等。
+# 优点：便于问题定位和优化。
+# 局限：依赖货架和SKU参数准确。
+# 上下文：为结果输出和异常分析提供依据。
     reasons = {}
     for _, sku in unplaced_skus.iterrows():
         sku_id = sku['sku_id']
@@ -1684,6 +1836,11 @@ def get_detailed_unplaced_reasons_by_sku_id(unplaced_skus, final_shelves, h_max,
 
 
 def write_results_to_excel(original_file_path, placed_sku_ids, detailed_reasons, sku_id_col_name, sku_shelf_assignments=None, final_shelves=None):
+# 结果写入Excel
+# 基本逻辑：将安放结果、未安放原因、货架规格等写入Excel，便于后续分析和复盘。
+# 优点：结果直观，便于查阅。
+# 局限：依赖原始数据格式。
+# 上下文：为最终结果输出和复盘提供支持。
     try:
         original_df = pd.read_excel(original_file_path); original_df[sku_id_col_name] = original_df[sku_id_col_name].astype(str)
         def get_status(sku_id): return "成功安放" if sku_id in placed_sku_ids else "未能安放"
@@ -1703,6 +1860,11 @@ def write_results_to_excel(original_file_path, placed_sku_ids, detailed_reasons,
     except Exception as e: return False, None, str(e)
 
 def calculate_ldh_utilization(final_solution, params):
+# 三维空间利用率详细分析
+# 基本逻辑：逐规格统计分配结果，分析数量、体积、宽度等利用率，输出详细日志。
+# 优点：结果可视化，便于优化。
+# 局限：依赖分配结果准确。
+# 上下文：为方案评价和复盘提供详细指标。
     log_lines = ["\n" + "-" * 70 + "\n" + " " * 24 + ">>> 三维空间利用率分析 <<<\n" + "-" * 70]
     assignments = final_solution.get('assignments', {}); final_shelves = final_solution.get('final_shelves', []); counts = final_solution.get('counts', [])
     for i, shelf_spec in enumerate(final_shelves):
@@ -1745,12 +1907,10 @@ def calculate_ldh_utilization(final_solution, params):
         log_lines.append(f"  - H-利用率 (高度): {h_util:.2%}")
     log_lines.append("-" * 70); return "\n".join(log_lines)
 
-# 【asyncio改造】将预计算函数改为异步版本
-async def pre_calculation_worker(q, params):
+# 【简化改造】将预计算函数改为同步版本
+def pre_calculation_worker(q, params):
     try:
         q.put(("log", "--- 步骤 0: 正在读取与预处理文件 ---\n")); q.put(("progress_update", ("正在读取SKU数据...", 0.1)))
-        # 【asyncio改造】在IO密集型操作后让出控制权
-        await asyncio.sleep(0.001)
         
         raw_data = read_excel_data(
             params['excel_file'], 
@@ -1767,8 +1927,6 @@ async def pre_calculation_worker(q, params):
         q.put(("log", f"从'{params['sku_sheet']}'Sheet读取了 {len(raw_data)} 条有效的SKU数据。\n"))
         
         q.put(("progress_update", ("正在读取货架数据...", 0.4)))
-        # 【asyncio改造】在IO密集型操作后让出控制权
-        await asyncio.sleep(0.001)
         
         shelves = read_shelf_params(params['excel_file'], params['shelf_sheet'], params['shelf_type_col'], params['shelf_cols'])
         q.put(("log", f"从'{params['shelf_sheet']}'Sheet读取了 {len(shelves)} 种货架规格。\n"))
@@ -1779,13 +1937,13 @@ async def pre_calculation_worker(q, params):
         packing_summary = analyze_packing_decision(raw_data, params['pallet_decimal_threshold'], q)
         raw_data_with_ldh = add_unified_ldh_columns(raw_data, packing_summary['decisions'])
         
-        # 【asyncio改造】将阻塞的sleep改为异步版本
-        await asyncio.sleep(0.5); corr_label, corr_val, grade = correlation_analysis(raw_data_with_ldh)
+        # 简短等待后进行相关性分析
+        time.sleep(0.1); corr_label, corr_val, grade = correlation_analysis(raw_data_with_ldh)
         q.put(("pre_calculation_done", (raw_data, raw_data_with_ldh, shelves, corr_label, corr_val, grade, packing_summary)))
     except Exception as e: q.put(("error", f"在文件读取或预处理阶段发生错误：\n{str(e)}"))
 
-# 【asyncio改造】将主计算函数改为异步版本
-async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
+# 【简化改造】将主计算函数改为同步版本
+def calculation_worker(q, params, raw_data, shelves, agg_data=None):
     current_step = "初始化"
     try:
         # --- 步骤 1: 装箱/装托判定分析 ---
@@ -1808,8 +1966,6 @@ async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
             raise ValueError("经过装箱装托判定筛选后，没有可用的货架类型")
         
         q.put(("log", f"--- {current_step} 完成 ---\n"))
-        # 【asyncio改造】在步骤完成后让出控制权
-        await asyncio.sleep(0.01)
         
         # --- 步骤 2: 数据聚合 ---
         current_step = "步骤2: 数据聚合"
@@ -1837,33 +1993,21 @@ async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
             q.put(("agg_data_computed", (agg_data, operable_data)))
         
         q.put(("log", f"--- {current_step} 完成 ---\n"))
-        # 【asyncio改造】在步骤完成后让出控制权
-        await asyncio.sleep(0.01)
 
         # --- 步骤 3: 计算最优L&D规格 ---
         current_step = f"步骤3: 计算最优L&D规格 (使用 {params['ld_method']} 算法)"
         q.put(("log", f"\n--- {current_step} 开始 ---\n"))
         
         if params['ld_method'] == 'complementary':
-            # 【asyncio改造】使用executor运行耗时的计算函数，避免阻塞事件循环
-            import concurrent.futures
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                status, ld_return_value = await loop.run_in_executor(
-                    executor, ld_calculator_complementary,
-                    agg_data, filtered_shelves, params['coverage_target'], 
-                    params['allow_rotation'], q, params
-                )
+            status, ld_return_value = ld_calculator_complementary(
+                agg_data, filtered_shelves, params['coverage_target'], 
+                params['allow_rotation'], q, params
+            )
         else:
-            # 【asyncio改造】使用executor运行耗时的计算函数
-            import concurrent.futures
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                status, ld_return_value = await loop.run_in_executor(
-                    executor, ld_calculator_single,
-                    agg_data, filtered_shelves, params['coverage_target'], 
-                    params['allow_rotation'], q
-                )
+            status, ld_return_value = ld_calculator_single(
+                agg_data, filtered_shelves, params['coverage_target'], 
+                params['allow_rotation'], q
+            )
         
         if status != "success":
             q.put(("error", "L&D计算失败：无法找到满足要求的货架规格。"))
@@ -1871,8 +2015,6 @@ async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
         
         best_ld_shelf = ld_return_value
         q.put(("log", f"--- {current_step} 完成 ---\n"))
-        # 【asyncio改造】在步骤完成后让出控制权
-        await asyncio.sleep(0.01)
 
         # --- 步骤 4: 计算最优H规格 ---
         current_step = f"步骤4: 计算最优H规格 (使用 {params['h_method']} 算法)"
@@ -1888,30 +2030,18 @@ async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
         h_cand, eval_details = [], []
 
         if h_method == 'manual':
-            # 【asyncio改造】对H计算函数也使用executor
-            import concurrent.futures
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                h_cand, eval_details = await loop.run_in_executor(
-                    executor, h_calculators[h_method],
-                    operable_data, h_max, params['p1'], params['p2']
-                )
+            h_cand, eval_details = h_calculators[h_method](
+                operable_data, h_max, params['p1'], params['p2']
+            )
         else:
-            # 【asyncio改造】对H计算函数也使用executor
-            import concurrent.futures
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                h_cand, eval_details = await loop.run_in_executor(
-                    executor, h_calculators[h_method],
-                    agg_data, operable_data, best_ld_shelf, 
-                    params['coverage_target'], params['allow_rotation'], params, q
-                )
+            h_cand, eval_details = h_calculators[h_method](
+                agg_data, operable_data, best_ld_shelf, 
+                params['coverage_target'], params['allow_rotation'], params, q
+            )
 
         # --- 步骤 5: 最终规格确定与精确装箱 ---
         current_step = "步骤5: 最终规格确定与精确装箱"
         q.put(("log", f"\n--- {current_step} 开始 ---\n"))
-        # 【asyncio改造】在开始重要步骤前让出控制权
-        await asyncio.sleep(0.01)
         
         if len(h_cand) < 2:
             raise ValueError("高度计算未能产生足够的候选高度")
@@ -1935,18 +2065,11 @@ async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
             ]
 
         q.put(("log", f"最优货架规格已确定（共{len(optimal_shelves)}种），开始执行精确装箱...\n"))
-        # 【asyncio改造】在密集计算前让出控制权
-        await asyncio.sleep(0.01)
         
-        # 【asyncio改造】对最终装箱函数也使用executor，这是最耗时的操作
-        import concurrent.futures
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            final_solution = await loop.run_in_executor(
-                executor, final_placement_with_individual_skus_mixed,
-                operable_data, optimal_shelves, packing_summary['decisions'], 
-                params['allow_rotation'], q
-            )
+        final_solution = final_placement_with_individual_skus_mixed(
+            operable_data, optimal_shelves, packing_summary['decisions'], 
+            params['allow_rotation'], q
+        )
         
         if not final_solution['placed_sku_ids']:
             raise ValueError("计算失败：即使在最优货架标准下，也未能安放任何SKU。")
@@ -1954,8 +2077,6 @@ async def calculation_worker(q, params, raw_data, shelves, agg_data=None):
         # --- 步骤 6: 结果整理与输出 ---
         current_step = "步骤6: 结果整理"
         q.put(("log", f"\n--- {current_step} 开始 ---\n"))
-        # 【asyncio改造】在最后步骤前让出控制权
-        await asyncio.sleep(0.01)
         
         q.put(("result", (optimal_shelves, final_solution, params['coverage_target'], packing_summary)))
         
@@ -2009,29 +2130,11 @@ class App(ctk.CTk):
         self.geometry("1280x850")
         self.grid_columnconfigure(1, weight=1); self.grid_rowconfigure(0, weight=1)
         
-        # 【asyncio改造】设置异步事件循环
-        self.loop = asyncio.new_event_loop()
-        self.setup_async_loop()
-        
         # 绑定窗口关闭事件
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # 【asyncio改造】设置队列和缓存
+        # 设置队列和缓存
         self.queue = queue.Queue(); self.current_params = None; self.cache = {}
-    
-    # 【asyncio改造】设置异步事件循环与tkinter结合
-    def setup_async_loop(self):
-        """设置异步事件循环与tkinter协同工作"""
-        def run_async_loop():
-            asyncio.set_event_loop(self.loop)
-            self.loop.run_forever()
-        
-        # 在独立线程中运行异步事件循环
-        self.async_thread = threading.Thread(target=run_async_loop, daemon=True)
-        self.async_thread.start()
-        
-        # 修改异步任务创建方法，确保在正确的循环中运行
-        self.create_async_task = lambda coro: asyncio.run_coroutine_threadsafe(coro, self.loop)
         
         self.frame_left = ctk.CTkScrollableFrame(self, width=380, corner_radius=0, label_text="输入与配置", label_font=ctk.CTkFont(size=16, weight="bold"))
         self.frame_left.grid(row=0, column=0, rowspan=3, sticky="nsw")
@@ -2565,32 +2668,43 @@ v4.0.0 重大更新:
         return params
 
     def process_queue(self):
-        try:
-            msg_type, msg_content = self.queue.get_nowait()
-            if msg_type == "log": self.update_textbox(msg_content)
-            elif msg_type == "progress": self.update_progress(*msg_content)
-            elif msg_type == "progress_update": self.status_label.configure(text=f"状态: {msg_content[0]}"); self.progressbar.set(msg_content[1])
-            elif msg_type == "pre_calculation_done":
-                self.progressbar.set(1.0); raw_data, raw_data_with_ldh, shelves, corr_label, corr_val, grade, packing_summary = msg_content
-                self.cache.update({
-                    'excel_path': self.current_params['excel_file'], 
-                    'sku_sheet': self.current_params['sku_sheet'],
-                    'shelf_sheet': self.current_params['shelf_sheet'],
-                    'raw_data': raw_data,
-                    'raw_data_with_ldh': raw_data_with_ldh,
-                    'shelves': shelves, 
-                    'corr_result': (corr_label, corr_val, grade),
-                    'packing_summary': packing_summary
-                })
-                self.proceed_with_correlation_check()
-            elif msg_type == "agg_data_computed": self.cache.update({'agg_data': msg_content[0], 'operable_data': msg_content[1], 'h_max': self.current_params['h_max']})
-            elif msg_type == "result": self.display_results(*msg_content)
-            elif msg_type == "diagnostics": self.display_diagnostics(*msg_content)
-            elif msg_type == "visualization_data": self.cache['viz_data'] = msg_content; self.update_charts(); self.tabview.set("分析图表")
-            elif msg_type == "error": self.update_textbox(f"\n!!!!!! 计算出错 !!!!!!\n\n{msg_content}\n"); self.button_run.configure(state="normal"); self.status_label.configure(text="状态: 计算失败"); self.progressbar.set(0)
-            elif msg_type == "done": self.status_label.configure(text=f"状态: {msg_content}"); self.button_run.configure(state="normal"); self.progressbar.set(1)
-        except queue.Empty: pass
-        self.after(100, self.process_queue)
+        # 批量处理队列消息，避免积压
+        processed_count = 0
+        max_process_per_cycle = 5  # 每次最多处理5条消息
+        
+        while processed_count < max_process_per_cycle:
+            try:
+                msg_type, msg_content = self.queue.get_nowait()
+                processed_count += 1
+                
+                if msg_type == "log": self.update_textbox(msg_content)
+                elif msg_type == "progress": self.update_progress(*msg_content)
+                elif msg_type == "progress_update": self.status_label.configure(text=f"状态: {msg_content[0]}"); self.progressbar.set(msg_content[1])
+                elif msg_type == "pre_calculation_done":
+                    self.progressbar.set(1.0); raw_data, raw_data_with_ldh, shelves, corr_label, corr_val, grade, packing_summary = msg_content
+                    self.cache.update({
+                        'excel_path': self.current_params['excel_file'], 
+                        'sku_sheet': self.current_params['sku_sheet'],
+                        'shelf_sheet': self.current_params['shelf_sheet'],
+                        'raw_data': raw_data,
+                        'raw_data_with_ldh': raw_data_with_ldh,
+                        'shelves': shelves, 
+                        'corr_result': (corr_label, corr_val, grade),
+                        'packing_summary': packing_summary
+                    })
+                    self.proceed_with_correlation_check()
+                elif msg_type == "agg_data_computed": self.cache.update({'agg_data': msg_content[0], 'operable_data': msg_content[1], 'h_max': self.current_params['h_max']})
+                elif msg_type == "result": self.display_results(*msg_content)
+                elif msg_type == "diagnostics": self.display_diagnostics(*msg_content)
+                elif msg_type == "visualization_data": self.cache['viz_data'] = msg_content; self.update_charts(); self.tabview.set("分析图表")
+                elif msg_type == "error": self.update_textbox(f"\n!!!!!! 计算出错 !!!!!!\n\n{msg_content}\n"); self.button_run.configure(state="normal"); self.status_label.configure(text="状态: 计算失败"); self.progressbar.set(0)
+                elif msg_type == "done": self.status_label.configure(text=f"状态: {msg_content}"); self.button_run.configure(state="normal"); self.progressbar.set(1)
+                
+            except queue.Empty: 
+                break
+        
+        # 减少轮询间隔
+        self.after(50, self.process_queue)
     
     def start_calculation(self):
         if self.canvas: self.canvas.get_tk_widget().destroy(); self.canvas = None
@@ -2607,17 +2721,16 @@ v4.0.0 重大更新:
                 self.update_textbox("文件缓存命中，跳过文件读取和检验步骤。\n"); self.proceed_with_correlation_check()
             else: 
                 self.status_label.configure(text="状态: 正在初始化...")
-                # 【asyncio改造】使用异步任务替代线程
-                self.create_async_task(self.async_pre_calculation_wrapper())
+                # 使用简单线程替代异步任务
+                def run_pre_calculation():
+                    try:
+                        pre_calculation_worker(self.queue, self.current_params)
+                    except Exception as e:
+                        self.queue.put(("error", f"预计算发生错误: {str(e)}"))
+                
+                self.calc_thread = threading.Thread(target=run_pre_calculation, daemon=True)
+                self.calc_thread.start()
         except Exception as e: messagebox.showerror("输入或文件错误", f"发生错误: {e}"); self.button_run.configure(state="normal"); self.status_label.configure(text="状态: 空闲")
-    
-    # 【asyncio改造】异步预计算包装函数
-    async def async_pre_calculation_wrapper(self):
-        """异步预计算包装函数，处理文件读取和预处理"""
-        try:
-            await pre_calculation_worker(self.queue, self.current_params)
-        except Exception as e:
-            self.queue.put(("error", f"异步预计算发生错误: {str(e)}"))
     
     def proceed_with_correlation_check(self):
         corr_label, corr_val, grade = self.cache['corr_result']
@@ -2900,23 +3013,22 @@ v4.0.0 重大更新:
         if 'packing_summary' in self.cache:
             self.current_params['packing_summary'] = self.cache['packing_summary']
         
-        # 【asyncio改造】使用异步任务替代线程
-        self.create_async_task(self.async_calculation_wrapper())
-
-    # 【asyncio改造】异步计算包装函数
-    async def async_calculation_wrapper(self):
-        """异步计算包装函数，处理核心计算"""
-        try:
-            agg_data_cache = self.cache.get('agg_data') if self.cache.get('h_max') == self.current_params['h_max'] else None
-            await calculation_worker(
-                self.queue, 
-                self.current_params, 
-                self.cache['raw_data'], 
-                self.cache['shelves'], 
-                agg_data_cache
-            )
-        except Exception as e:
-            self.queue.put(("error", f"异步计算发生错误: {str(e)}"))
+        # 使用简单线程替代异步任务
+        def run_calculation():
+            try:
+                agg_data_cache = self.cache.get('agg_data') if self.cache.get('h_max') == self.current_params['h_max'] else None
+                calculation_worker(
+                    self.queue, 
+                    self.current_params, 
+                    self.cache['raw_data'], 
+                    self.cache['shelves'], 
+                    agg_data_cache
+                )
+            except Exception as e:
+                self.queue.put(("error", f"计算发生错误: {str(e)}"))
+        
+        self.calc_thread = threading.Thread(target=run_calculation, daemon=True)
+        self.calc_thread.start()
 
     def display_results(self, final_shelves, solution, coverage_target, packing_summary=None):
         try: params = self.current_params; usable_vertical_space = params['warehouse_h'] - params['bottom_clearance']
