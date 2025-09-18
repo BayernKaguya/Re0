@@ -1278,27 +1278,65 @@ def final_placement_with_individual_skus_mixed(operable_data, final_shelves, pac
 
     # 3. 产出最终结果
     placed_sku_ids = set(sku_shelf_assignments.keys())
-    # 计算覆盖率时使用合适的体积数据
+    
+    # 修正：按件数和实际安放类型计算覆盖率
     total_volume = 0
     placed_volume = 0
+    total_pieces = 0  # 总件数
+    placed_pieces = 0  # 已安放件数
     
     for _, sku in operable_data.iterrows():
         sku_id = sku['sku_id']
         if sku_id in packing_decisions:
-            decision = packing_decisions[sku_id]['decision']
-            # 根据决策类型选择体积计算方式
-            if decision == 'box_only':
-                vol = sku['box_v']
-            elif decision == 'pallet_only':
-                vol = sku['pallet_v']
-            else:  # mixed
-                vol = max(sku['pallet_v'], sku['box_v'])  # 使用较大的体积作为参考
+            decision = packing_decisions[sku_id]
+            decision_type = decision['decision']
             
-            total_volume += vol
+            # 计算该SKU的实际件数
+            if decision_type == 'box_only':
+                pieces = sku['box_count']
+                theoretical_vol = sku['box_v']  # 理论体积
+            elif decision_type == 'pallet_only':
+                pieces = sku['pallet_count'] * sku['boxes_per_pallet']
+                theoretical_vol = sku['pallet_v']  # 理论体积
+            else:  # mixed
+                pieces = decision['final_pallet_count'] * sku['boxes_per_pallet'] + decision['remaining_box_count']
+                theoretical_vol = max(sku['pallet_v'], sku['box_v'])  # 理论体积（取较大值）
+            
+            total_pieces += pieces
+            
+            # 体积计算：分子分母使用一致的逻辑
             if sku_id in placed_sku_ids:
-                placed_volume += vol
+                placed_pieces += pieces
+                
+                # 对于已安放的SKU，使用实际安放时的数据类型对应的体积
+                if decision_type == 'mixed':
+                    # 找到该SKU在assignments中的实际使用类型
+                    shelf_idx = sku_shelf_assignments[sku_id]
+                    used_data_type = 'pallet'  # 默认值
+                    for assigned_sku, _ in assignments[shelf_idx]:
+                        if assigned_sku['sku_id'] == sku_id:
+                            used_data_type = assigned_sku.get('used_data_type', 'pallet')
+                            break
+                    
+                    # 关键修正：分子分母都使用实际安放类型的体积
+                    actual_vol = sku['pallet_v'] if used_data_type == 'pallet' else sku['box_v']
+                    placed_volume += actual_vol
+                    total_volume += actual_vol  # 与分子保持一致
+                else:
+                    # 非混装SKU，理论体积和实际体积一致
+                    placed_volume += theoretical_vol
+                    total_volume += theoretical_vol
+            else:
+                # 未安放的SKU，只计入分母
+                # 对于未安放的混装SKU，需要估算应使用的体积类型
+                if decision_type == 'mixed':
+                    # 使用装托体积作为默认（保守估算）
+                    total_volume += sku['pallet_v']
+                else:
+                    total_volume += theoretical_vol
     
-    coverage_count = len(placed_sku_ids) / total_skus if total_skus > 0 else 0
+    # 修正后的覆盖率：按件数和实际安放类型计算
+    coverage_count = placed_pieces / total_pieces if total_pieces > 0 else 0
     coverage_volume = placed_volume / total_volume if total_volume > 0 else 0
     
     return {
@@ -1384,9 +1422,23 @@ def final_placement_with_individual_skus(operable_data, final_shelves, allow_rot
     placed_sku_ids = set(sku_shelf_assignments.keys())
     placed_skus_df = operable_data[operable_data['sku_id'].isin(placed_sku_ids)]
     
-    coverage_count = len(placed_sku_ids) / total_skus if total_skus > 0 else 0
+    # 修正：按件数计算覆盖率（非混合模式默认使用装托数据）
+    total_pieces = 0
+    placed_pieces = 0
     
-    # 计算体积覆盖率时使用适当的体积数据
+    for _, sku in operable_data.iterrows():
+        # 非混合模式默认使用装托数据计算件数
+        pieces = sku.get('pallet_count', 1) * sku.get('boxes_per_pallet', 1)
+        if pieces == 0:  # 如果装托数据无效，使用装箱数据
+            pieces = sku.get('box_count', 1)
+        
+        total_pieces += pieces
+        if sku['sku_id'] in placed_sku_ids:
+            placed_pieces += pieces
+    
+    coverage_count = placed_pieces / total_pieces if total_pieces > 0 else 0
+    
+    # 计算体积覆盖率时使用适当的体积数据（非混合模式默认使用装托体积）
     total_volume = operable_data.get('pallet_v', operable_data.get('V', pd.Series([0]))).sum()
     placed_volume = placed_skus_df.get('pallet_v', placed_skus_df.get('V', pd.Series([0]))).sum()
     coverage_volume = placed_volume / total_volume if total_volume > 0 else 0
@@ -2937,8 +2989,8 @@ v4.0.0 重大更新:
         
         # 汇总信息
         summary_text = (f"货架总数: {data['total_shelves']} 个\n"
-                       f"SKU数量覆盖率: {data['coverage_count']:.2f}%\n"
-                       f"SKU体积覆盖率: {data['coverage_volume']:.2f}%")
+                       f"货量覆盖率（按件数）: {data['coverage_count']:.2f}%\n"
+                       f"体积覆盖率（按实际安放类型）: {data['coverage_volume']:.2f}%")
         
         ax.text(0.95, 0.05, summary_text, transform=ax.transAxes, fontsize=10,
                 verticalalignment='bottom', horizontalalignment='right',
@@ -3033,8 +3085,8 @@ v4.0.0 重大更新:
         cov_vol = final_solution['coverage_volume'] * 100
         
         summary_text = (f"货架总数: {total_shelves} 个\n"
-                        f"SKU数量覆盖率: {cov_count:.2f}%\n"
-                        f"SKU体积覆盖率: {cov_vol:.2f}%")
+                        f"货量覆盖率（按件数）: {cov_count:.2f}%\n"
+                        f"体积覆盖率（按实际安放类型）: {cov_vol:.2f}%")
         
         ax.text(0.95, 0.05, summary_text, transform=ax.transAxes, fontsize=10,
                 verticalalignment='bottom', horizontalalignment='right',
@@ -3311,7 +3363,9 @@ v4.0.0 重大更新:
                 num_layers = math.floor(usable_vertical_space / layer_total_h) if layer_total_h > 0 else 0
                 spec_line += f" | 可摆 {num_layers} 层"
             self.update_textbox(spec_line + "\n")
-        self.update_textbox("-" * 70 + "\n最终方案实际覆盖率:\n"); self.update_textbox(f"  - SKU数量覆盖率: {solution['coverage_count'] * 100:.2f}%\n  - SKU体积覆盖率: {solution['coverage_volume'] * 100:.2f}%\n")
+        self.update_textbox("-" * 70 + "\n最终方案实际覆盖率:\n")
+        self.update_textbox(f"  - 货量覆盖率（按件数）: {solution['coverage_count'] * 100:.2f}%\n")
+        self.update_textbox(f"  - 体积覆盖率（按实际安放类型）: {solution['coverage_volume'] * 100:.2f}%\n")
     
     def display_diagnostics(self, unplaced_skus, detailed_reasons):
         header = "\n" + "="*70 + "\n" + " " * 22 + ">>> 未安放SKU诊断报告 <<<\n" + "="*70 + "\n"
