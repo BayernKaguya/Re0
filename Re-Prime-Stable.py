@@ -1782,7 +1782,7 @@ def calculation_worker(q, params, raw_data, shelves, agg_data=None):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("货架配置优化工具 ProVersion-4.0.0")
+        self.title("货架配置优化工具 RePrime-v1.1.1")
         self.geometry("1280x850")
         self.grid_columnconfigure(1, weight=1); self.grid_rowconfigure(0, weight=1)
         
@@ -2208,7 +2208,7 @@ class App(ctk.CTk):
             self.destroy()
 
     def display_welcome_message(self):
-        self.update_textbox("""欢迎使用货架配置优化工具 ProVersion-4.0.0！
+        self.update_textbox("""欢迎使用货架配置优化工具 RePrime-v1.1.1！
 
 v4.0.0 重大更新:
 - 装箱装托智能判定: 全新的算法可根据SKU特性和空托率自动判定装箱、装托或混装方案
